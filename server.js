@@ -40,6 +40,7 @@ loadRoutes(routersPath);
 
 const filesPath = path.join(__dirname, "/files");
 
+app.use("/assets", express.static(path.join(__dirname, "assets")));
 app.use(express.static(filesPath));
 
 app.use((req, res) => {

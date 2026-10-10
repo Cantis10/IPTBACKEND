@@ -1,6 +1,7 @@
 const express = require("express");
 const { checkAuth } = require("../../imports/token");
 const db = require("../../imports/database");
+const productImageUrl = require("../../imports/productImageUrl");
 
 const app = express.Router();
 
@@ -37,7 +38,12 @@ app.get("/cart", checkAuth("user"), async (req, res) => {
       args: [customerId],
     });
 
-    return res.json(result.rows);
+    return res.json(
+      result.rows.map((row) => ({
+        ...row,
+        image_url: productImageUrl(row.image_url),
+      })),
+    );
   } catch (error) {
     console.error("Error fetching customer cart:", error);
     return res.status(500).json({ error: "Failed to fetch cart" });
