@@ -6,6 +6,29 @@ const cookieParser = require("cookie-parser");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const allowedOrigins = new Set(
+  (process.env.CORS_ORIGINS || "http://localhost:8100,http://127.0.0.1:8100,http://localhost:4200")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  }
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(origin && !allowedOrigins.has(origin) ? 403 : 204);
+  }
+  next();
+});
+
 app.use(express.json());
 app.use(cookieParser());
 const allowedOrigins = new Set([
@@ -61,6 +84,7 @@ loadRoutes(routersPath);
 
 const filesPath = path.join(__dirname, "/files");
 
+app.use("/assets", express.static(path.join(__dirname, "assets")));
 app.use(express.static(filesPath));
 
 app.use((req, res) => {

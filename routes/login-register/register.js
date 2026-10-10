@@ -2,8 +2,11 @@ const express = require("express");
 const app = express.Router();
 const db = require("../../imports/database");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
+const { promisify } = require("util");
 
 const JWT_SECRET = process.env.JWT_SECRET;
+const scrypt = promisify(crypto.scrypt);
 
 app.customPath = "/api";
 
@@ -39,12 +42,20 @@ app.post("/register", async (req, res) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
+    if (password.length < 8) {
+      return res.status(400).json({ error: "Password must be at least 8 characters" });
+    }
+
     if (password.length > 255) {
       return res.status(400).json({ error: "Password too long" });
     }
 
     if (name.length > 200) {
       return res.status(400).json({ error: "Name too long" });
+    }
+
+    if (normalizedEmail.length > 254) {
+      return res.status(400).json({ error: "Email too long" });
     }
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
@@ -76,6 +87,8 @@ app.post("/register", async (req, res) => {
       typeof shipping_address === "string"
         ? shipping_address
         : shippingAddress;
+    const salt = crypto.randomBytes(16).toString("hex");
+    const passwordHash = `scrypt:${salt}:${(await scrypt(password, salt, 64)).toString("hex")}`;
 
     const result = await db.execute({
       sql: `
@@ -95,7 +108,7 @@ app.post("/register", async (req, res) => {
         name,
         normalizedEmail,
         typeof phone === "string" && phone ? phone : null,
-        password,
+        passwordHash,
         typeof address === "string" && address ? address : null,
       ],
     });

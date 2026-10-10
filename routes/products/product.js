@@ -2,6 +2,7 @@ const express = require("express");
 const app = express.Router();
 const { checkAuth } = require("../../imports/token");
 const db = require("../../imports/database");
+const productImageUrl = require("../../imports/productImageUrl");
 
 app.customPath = "/api";
 
@@ -57,7 +58,7 @@ app.get("/fetchProducts", async (req, res) => {
       price: row.price,
       stock_quantity: row.stock_quantity,
       unit: row.unit,
-      image_url: row.image_url,
+      image_url: productImageUrl(row.image_url),
       is_active: Boolean(row.is_active),
       category: row.category_id
         ? {
