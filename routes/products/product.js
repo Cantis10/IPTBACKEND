@@ -32,7 +32,6 @@ app.get("/fetchProducts", async (req, res) => {
           p.unit,
           p.image_url,
           p.is_active,
-          p.created_at,
 
           c.category_id,
           c.category_name,
@@ -67,7 +66,6 @@ app.get("/fetchProducts", async (req, res) => {
             description: row.category_description,
           }
         : null,
-      created_at: row.created_at,
     }));
 
     res.json(productId ? products[0] || null : products);

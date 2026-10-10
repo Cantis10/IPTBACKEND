@@ -5,6 +5,10 @@ environment variables. Set `CORS_ORIGINS` to a comma-separated list of
 frontend origins when they differ from the local Ionic and Angular defaults.
 Credentialed requests use an HTTP-only `auth` cookie.
 
+At startup, the backend adds `products.is_active` if it is missing. Existing
+products default to active; set the column to `0` to hide a product from product
+listing and prevent it from being added to a cart.
+
 ## API
 
 - `POST /api/register` and `POST /api/login` create and authenticate accounts.

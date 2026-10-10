@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
 const cookieParser = require("cookie-parser");
+const initializeDatabase = require("./imports/initializeDatabase");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -71,6 +72,16 @@ app.use((req, res) => {
 });
 module.exports = app;
 
-app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
-});
+async function start() {
+  try {
+    await initializeDatabase();
+    app.listen(PORT, () => {
+      console.log(`Server running at http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.error("Failed to initialize database:", error);
+    process.exitCode = 1;
+  }
+}
+
+start();
