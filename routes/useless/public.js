@@ -10,7 +10,7 @@ app.use(express.static(filesPath));
 
 app.get("/", (req, res) => {
   console.log("Route hit: /");
-  res.sendFile(path.join(filesPath, "index.html"));
+  res.redirect("/api/databaseChecker");
 });
 
 app.get("/login", (req, res) => {
