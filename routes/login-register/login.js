@@ -3,8 +3,11 @@ const app = express.Router();
 
 const db = require("../../imports/database");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
+const { promisify } = require("util");
 
 const JWT_SECRET = process.env.JWT_SECRET;
+const scrypt = promisify(crypto.scrypt);
 
 app.customPath = "/api";
 
@@ -23,19 +26,51 @@ app.post("/login", async (req, res) => {
       });
     }
 
+    const normalizedEmail = email.trim().toLowerCase();
     const result = await db.execute({
       sql: `
-        SELECT user_id, email, role
+        SELECT user_id, email, role, password_hash
         FROM users
         WHERE email = ?
-          AND password_hash = ?
           AND account_status = 'Active'
       `,
-      args: [email.trim().toLowerCase(), password],
+      args: [normalizedEmail],
     });
 
     const user = result.rows[0];
-    if (!user) {
+    if (!user || typeof user.password_hash !== "string") {
+      return res.status(401).json({
+        error: "Invalid email or password",
+      });
+    }
+
+    const storedHash = user.password_hash;
+    let validPassword = false;
+    if (storedHash.startsWith("scrypt:")) {
+      const [, salt, expectedHex] = storedHash.split(":");
+      if (salt && /^[\da-f]{128}$/i.test(expectedHex || "")) {
+        const expected = Buffer.from(expectedHex, "hex");
+        const actual = await scrypt(password, salt, expected.length);
+        validPassword = crypto.timingSafeEqual(expected, actual);
+      }
+    } else {
+      // Upgrade legacy plaintext records after their next successful login.
+      const submitted = Buffer.from(password);
+      const existing = Buffer.from(storedHash);
+      validPassword =
+        submitted.length === existing.length &&
+        crypto.timingSafeEqual(submitted, existing);
+      if (validPassword) {
+        const salt = crypto.randomBytes(16).toString("hex");
+        const upgradedHash = `scrypt:${salt}:${(await scrypt(password, salt, 64)).toString("hex")}`;
+        await db.execute({
+          sql: "UPDATE users SET password_hash = ? WHERE user_id = ?",
+          args: [upgradedHash, user.user_id],
+        });
+      }
+    }
+
+    if (!validPassword) {
       return res.status(401).json({
         error: "Invalid email or password",
       });
