@@ -1,18 +1,22 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
-require("dotenv").config();
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 const cookieParser = require("cookie-parser");
 const initializeDatabase = require("./imports/initializeDatabase");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const allowedOrigins = new Set(
-  (process.env.CORS_ORIGINS || "http://localhost:8100,http://127.0.0.1:8100,http://localhost:4200")
-    .split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean),
-);
+const allowedOrigins = new Set([
+  "http://localhost",
+  "http://localhost:8100",
+  "http://127.0.0.1:8100",
+  "http://localhost:4200",
+  "capacitor://localhost",
+  "ionic://localhost",
+  ...(process.env.CORS_ORIGINS || "").split(",").map((origin) => origin.trim()).filter(Boolean),
+  ...(process.env.FRONTEND_ORIGIN || "").split(",").map((origin) => origin.trim()).filter(Boolean),
+]);
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -20,8 +24,8 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   }
 
   if (req.method === "OPTIONS") {
@@ -32,27 +36,6 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 app.use(cookieParser());
-const allowedOrigins = new Set([
-  "http://localhost",
-  "http://localhost:8100",
-  "http://localhost:4200",
-  "capacitor://localhost",
-  "ionic://localhost",
-  ...(process.env.FRONTEND_ORIGIN || "").split(",").map((origin) => origin.trim()).filter(Boolean),
-]);
-
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (origin && allowedOrigins.has(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-    res.setHeader("Vary", "Origin");
-  }
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  if (req.method === "OPTIONS") return res.sendStatus(204);
-  next();
-});
 const routersPath = path.join(__dirname, "routes");
 
 // Recursively load routes
