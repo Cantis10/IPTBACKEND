@@ -10,11 +10,14 @@ app.customPath = "/api";
 
 app.post("/login", async (req, res) => {
   try {
-    console.log("A");
+    const { email, password } = req.body ?? {};
 
-    const { email, password } = req.body;
-
-    if (!email || !password) {
+    if (
+      typeof email !== "string" ||
+      typeof password !== "string" ||
+      !email.trim() ||
+      !password
+    ) {
       return res.status(400).json({
         error: "Missing required fields",
       });
@@ -22,46 +25,28 @@ app.post("/login", async (req, res) => {
 
     const result = await db.execute({
       sql: `
-        SELECT *
-        FROM Customer
-        WHERE Cus_email = ?
-        AND Cus_password = ?
+        SELECT user_id, email, role
+        FROM users
+        WHERE email = ?
+          AND password_hash = ?
+          AND account_status = 'Active'
       `,
-      args: [email, password],
+      args: [email.trim().toLowerCase(), password],
     });
 
-    const users = result.rows;
-
-    const result2 = await db.execute({
-      sql: `
-        SELECT *
-        FROM Admin
-        WHERE Admin_email = ?
-        AND Admin_password = ?
-      `,
-      args: [email, password],
-    });
-
-    const admins = result2.rows;
-
-    console.log("a");
-    console.log(admins, users);
-
-    if (users.length === 0 && admins.length === 0) {
+    const user = result.rows[0];
+    if (!user) {
       return res.status(401).json({
         error: "Invalid email or password",
       });
     }
 
-    console.log("attempting");
-
-    const user = admins[0] ? admins[0] : users[0];
-    const isAdmin = !!admins[0];
+    const isAdmin = String(user.role).toLowerCase() === "admin";
 
     const token = jwt.sign(
       {
-        userId: user.Customer_id,
-        email: user.Cus_email,
+        userId: user.user_id,
+        email: user.email,
         role: isAdmin ? "admin" : "user",
       },
       JWT_SECRET,
@@ -69,8 +54,6 @@ app.post("/login", async (req, res) => {
         expiresIn: "24h",
       },
     );
-
-    console.log("is admin?", isAdmin);
 
     // Store JWT in HTTP-only cookie
     res.cookie("auth", token, {
@@ -80,7 +63,6 @@ app.post("/login", async (req, res) => {
       maxAge: 24 * 60 * 60 * 1000,
     });
 
-    // Don't need to send the JWT back to JavaScript anymore
     return res.json({
       role: isAdmin ? "admin" : "user",
     });

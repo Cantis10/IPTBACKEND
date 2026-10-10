@@ -2,84 +2,113 @@ const express = require("express");
 const app = express.Router();
 const db = require("../../imports/database");
 const jwt = require("jsonwebtoken");
+
 const JWT_SECRET = process.env.JWT_SECRET;
+
 app.customPath = "/api";
 
 app.post("/register", async (req, res) => {
   try {
+    const {
+      firstName,
+      lastName,
+      fullName,
+      full_name,
+      username,
+      email,
+      password,
+      phoneNumber,
+      phone_number,
+      shippingAddress,
+      shipping_address,
+    } = req.body ?? {};
 
-    const { firstName, lastName, email, password } = req.body;
-    const first_name = firstName;
-    const last_name = lastName;
-    if (!first_name || !last_name || !email || !password) {
-      console.log("missing required fields");
+    const normalizedEmail =
+      typeof email === "string" ? email.trim().toLowerCase() : "";
+    const name =
+      typeof full_name === "string"
+        ? full_name.trim()
+        : typeof fullName === "string"
+          ? fullName.trim()
+          : [firstName, lastName]
+              .filter((part) => typeof part === "string" && part.trim())
+              .map((part) => part.trim())
+              .join(" ");
+
+    if (!name || !normalizedEmail || typeof password !== "string" || !password) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
     if (password.length > 255) {
-      console.log("password too long");
       return res.status(400).json({ error: "Password too long" });
     }
 
-    if (first_name.length > 100 || last_name.length > 100) {
-      console.log("name too long");
+    if (name.length > 200) {
       return res.status(400).json({ error: "Name too long" });
     }
 
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      console.log("invalid email format");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
       return res.status(400).json({ error: "Invalid email format" });
     }
-    /*INSERT INTO Customer (
-    Customer_id,
-    first_name,
-    last_name,
-    Cus_email,
-    Cus_phone,
-    Cus_birthdate,
-    Cus_password,
-    Status
-) */
-    //TODO: add into
 
     const existingUser = await db.execute({
-  sql: `
-    SELECT Customer_id
-    FROM Customer
-    WHERE Cus_email = ?
-  `,
-  args: [email],
-});
+      sql: `
+        SELECT user_id
+        FROM users
+        WHERE email = ?
+      `,
+      args: [normalizedEmail],
+    });
 
-if (existingUser.rows.length > 0) {
-  return res.status(409).json({
-    error: "Email is already registered",
-  });
-}
+    if (existingUser.rows.length > 0) {
+      return res.status(409).json({
+        error: "Email is already registered",
+      });
+    }
+
+    const normalizedUsername =
+      typeof username === "string" && username.trim()
+        ? username.trim()
+        : normalizedEmail.split("@")[0];
+    const phone =
+      typeof phone_number === "string" ? phone_number : phoneNumber;
+    const address =
+      typeof shipping_address === "string"
+        ? shipping_address
+        : shippingAddress;
+
     const result = await db.execute({
       sql: `
-        INSERT INTO Customer (first_name, last_name, Cus_email, Cus_password)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO users (
+          username,
+          full_name,
+          email,
+          phone_number,
+          password_hash,
+          shipping_address
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        RETURNING user_id, email, role
       `,
-      args: [first_name, last_name, email, password],
+      args: [
+        normalizedUsername,
+        name,
+        normalizedEmail,
+        typeof phone === "string" && phone ? phone : null,
+        password,
+        typeof address === "string" && address ? address : null,
+      ],
     });
-    if (result.affectedRows === 0) {
+
+    const user = result.rows[0];
+    if (!user) {
       return res.status(500).json({ error: "Server error" });
     }
-    const user = await db.execute({
-      sql: `
-        SELECT *
-        FROM Customer
-        WHERE Cus_email = ?
-        AND Cus_password = ?
-      `,
-      args: [email, password],
-    });
 
     const token = jwt.sign(
       {
-        userId: user.Customer_id,
-        email: user.Cus_email,
+        userId: user.user_id,
+        email: user.email,
         role: "user",
       },
       JWT_SECRET,
@@ -99,8 +128,9 @@ if (existingUser.rows.length > 0) {
       login: "success",
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
+    console.error("Registration error:", err);
+    return res.status(500).json({ error: "Server error" });
   }
 });
+
 module.exports = app;
