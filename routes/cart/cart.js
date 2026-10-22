@@ -1,4 +1,4 @@
-const express = require("express");
+﻿const express = require("express");
 const { checkAuth } = require("../../imports/token");
 const db = require("../../imports/database");
 const productImageUrl = require("../../imports/productImageUrl");
@@ -180,4 +180,22 @@ async function getCartItem(customerId, productId) {
   return row ? { ...row, image_url: productImageUrl(row.image_url) } : null;
 }
 
+app.delete("/cart", authenticated, async (req, res) => {
+  const customerId = Number(req.user.userId);
+  if (!Number.isSafeInteger(customerId) || customerId <= 0) {
+    return res.status(401).json({ error: "Invalid customer account" });
+  }
+
+  try {
+    await db.execute({
+      sql: "DELETE FROM cart WHERE user_id = ?",
+      args: [customerId],
+    });
+    return res.sendStatus(204);
+  } catch (error) {
+    console.error("Error clearing customer cart after checkout:", error);
+    return res.status(500).json({ error: "Failed to clear cart" });
+  }
+});
 module.exports = app;
+
