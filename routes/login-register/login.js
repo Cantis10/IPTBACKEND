@@ -1,19 +1,22 @@
+
 const express = require("express");
 const app = express.Router();
 
 const db = require("../../imports/database");
 const jwt = require("jsonwebtoken");
-const crypto = require("crypto");
-const { promisify } = require("util");
 
 const JWT_SECRET = process.env.JWT_SECRET;
-const scrypt = promisify(crypto.scrypt);
 
 app.customPath = "/api";
 
 app.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body ?? {};
+
+    console.log("Login attempt:", {
+      email,
+      password: password ? "****" : undefined,
+    });
 
     if (
       typeof email !== "string" ||
@@ -26,7 +29,10 @@ app.post("/login", async (req, res) => {
       });
     }
 
+    console.log("SQL communication");
+
     const normalizedEmail = email.trim().toLowerCase();
+
     const result = await db.execute({
       sql: `
         SELECT user_id, email, role, password_hash
@@ -37,44 +43,24 @@ app.post("/login", async (req, res) => {
       args: [normalizedEmail],
     });
 
+    console.log("SQL query completed");
+    console.log("Rows returned:", result.rows.length);
+
     const user = result.rows[0];
-    if (!user || typeof user.password_hash !== "string") {
+
+    if (
+      !user ||
+      typeof user.password_hash !== "string" ||
+      user.password_hash !== password
+    ) {
+      console.log("Invalid email or password");
+
       return res.status(401).json({
         error: "Invalid email or password",
       });
     }
 
-    const storedHash = user.password_hash;
-    let validPassword = false;
-    if (storedHash.startsWith("scrypt:")) {
-      const [, salt, expectedHex] = storedHash.split(":");
-      if (salt && /^[\da-f]{128}$/i.test(expectedHex || "")) {
-        const expected = Buffer.from(expectedHex, "hex");
-        const actual = await scrypt(password, salt, expected.length);
-        validPassword = crypto.timingSafeEqual(expected, actual);
-      }
-    } else {
-      // Upgrade legacy plaintext records after their next successful login.
-      const submitted = Buffer.from(password);
-      const existing = Buffer.from(storedHash);
-      validPassword =
-        submitted.length === existing.length &&
-        crypto.timingSafeEqual(submitted, existing);
-      if (validPassword) {
-        const salt = crypto.randomBytes(16).toString("hex");
-        const upgradedHash = `scrypt:${salt}:${(await scrypt(password, salt, 64)).toString("hex")}`;
-        await db.execute({
-          sql: "UPDATE users SET password_hash = ? WHERE user_id = ?",
-          args: [upgradedHash, user.user_id],
-        });
-      }
-    }
-
-    if (!validPassword) {
-      return res.status(401).json({
-        error: "Invalid email or password",
-      });
-    }
+    console.log("SQL communication done");
 
     const isAdmin = String(user.role).toLowerCase() === "admin";
 
@@ -87,10 +73,9 @@ app.post("/login", async (req, res) => {
       JWT_SECRET,
       {
         expiresIn: "24h",
-      },
+      }
     );
 
-    // Store JWT in HTTP-only cookie
     res.cookie("auth", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",

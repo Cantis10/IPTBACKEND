@@ -30,5 +30,52 @@ app.get("/isLoggedIn", checkAuth("user"), async (req, res) => {
     return res.status(500).json({ error: "Unable to retrieve account" });
   }
 });
+app.get("/dbworking", async (req, res) => {
+  try {
+    const result = await db.execute("SELECT 1 AS connected");
+
+    return res.status(200).json({
+      success: true,
+      message: "Database connection successful",
+      database: "connected",
+      result: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Database availability check failed:", {
+      message: error.message,
+      code: error.code,
+      status: error.cause?.status,
+    });
+
+    return res.status(503).json({
+      success: false,
+      message: "Database connection failed",
+      database: "unavailable",
+      error: error.message,
+      code: error.code || null,
+      status: error.cause?.status || null,
+    });
+  }
+});
+app.get("/allproducts", async (req, res) => {
+  try {
+    const result = await db.execute(`
+      SELECT
+        product_id,
+        product_name
+      FROM products
+      ORDER BY product_id ASC
+    `);
+
+
+
+    res.json(result);
+  } catch (error) {
+    console.error("Error fetching products:", error);
+    res.status(500).json({
+      error: "Failed to fetch products",
+    });
+  }
+});
 
 module.exports = app;

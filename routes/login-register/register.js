@@ -12,6 +12,8 @@ app.customPath = "/api";
 
 app.post("/register", async (req, res) => {
   try {
+
+    console.log("Registration attempt:", req.body);
     const {
       firstName,
       lastName,
