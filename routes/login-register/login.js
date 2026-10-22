@@ -1,22 +1,36 @@
-
 const express = require("express");
 const app = express.Router();
 
 const db = require("../../imports/database");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
+const { promisify } = require("util");
 
 const JWT_SECRET = process.env.JWT_SECRET;
+const scrypt = promisify(crypto.scrypt);
 
 app.customPath = "/api";
+
+async function verifyPassword(password, storedHash) {
+  if (typeof storedHash !== "string") return false;
+
+  const [algorithm, salt, digest] = storedHash.split(":");
+  if (
+    algorithm !== "scrypt" ||
+    !/^[a-f0-9]{32}$/i.test(salt || "") ||
+    !/^[a-f0-9]{128}$/i.test(digest || "")
+  ) {
+    return false;
+  }
+
+  const expected = Buffer.from(digest, "hex");
+  const actual = await scrypt(password, salt, expected.length);
+  return crypto.timingSafeEqual(actual, expected);
+}
 
 app.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body ?? {};
-
-    console.log("Login attempt:", {
-      email,
-      password: password ? "****" : undefined,
-    });
 
     if (
       typeof email !== "string" ||
@@ -24,18 +38,17 @@ app.post("/login", async (req, res) => {
       !email.trim() ||
       !password
     ) {
-      return res.status(400).json({
-        error: "Missing required fields",
-      });
+      return res.status(400).json({ error: "Missing required fields" });
     }
 
-    console.log("SQL communication");
+    if (email.trim().length > 254 || password.length > 64) {
+      return res.status(400).json({ error: "Email or password is too long" });
+    }
 
     const normalizedEmail = email.trim().toLowerCase();
-
     const result = await db.execute({
       sql: `
-        SELECT user_id, email, role, password_hash
+        SELECT user_id, full_name, email, role, password_hash
         FROM users
         WHERE email = ?
           AND account_status = 'Active'
@@ -43,37 +56,16 @@ app.post("/login", async (req, res) => {
       args: [normalizedEmail],
     });
 
-    console.log("SQL query completed");
-    console.log("Rows returned:", result.rows.length);
-
     const user = result.rows[0];
-
-    if (
-      !user ||
-      typeof user.password_hash !== "string" ||
-      user.password_hash !== password
-    ) {
-      console.log("Invalid email or password");
-
-      return res.status(401).json({
-        error: "Invalid email or password",
-      });
+    if (!user || !(await verifyPassword(password, user.password_hash))) {
+      return res.status(401).json({ error: "Invalid email or password" });
     }
 
-    console.log("SQL communication done");
-
-    const isAdmin = String(user.role).toLowerCase() === "admin";
-
+    const role = String(user.role).toLowerCase() === "admin" ? "admin" : "user";
     const token = jwt.sign(
-      {
-        userId: user.user_id,
-        email: user.email,
-        role: isAdmin ? "admin" : "user",
-      },
+      { userId: user.user_id, email: user.email, role },
       JWT_SECRET,
-      {
-        expiresIn: "24h",
-      }
+      { expiresIn: "24h" }
     );
 
     res.cookie("auth", token, {
@@ -84,14 +76,16 @@ app.post("/login", async (req, res) => {
     });
 
     return res.json({
-      role: isAdmin ? "admin" : "user",
+      role,
+      user: {
+        userId: user.user_id,
+        fullName: user.full_name,
+        email: user.email,
+      },
     });
   } catch (err) {
     console.error("Login error:", err);
-
-    return res.status(500).json({
-      error: "Server error",
-    });
+    return res.status(500).json({ error: "Server error" });
   }
 });
 

@@ -13,7 +13,7 @@ app.customPath = "/api";
 app.post("/register", async (req, res) => {
   try {
 
-    console.log("Registration attempt:", req.body);
+    console.log("Registration attempt received.");
     const {
       firstName,
       lastName,
@@ -48,7 +48,7 @@ app.post("/register", async (req, res) => {
       return res.status(400).json({ error: "Password must be at least 8 characters" });
     }
 
-    if (password.length > 255) {
+    if (password.length > 64) {
       return res.status(400).json({ error: "Password too long" });
     }
 
@@ -119,6 +119,7 @@ app.post("/register", async (req, res) => {
     if (!user) {
       return res.status(500).json({ error: "Server error" });
     }
+    console.log("Registered account created:", user.user_id);
 
     const token = jwt.sign(
       {
