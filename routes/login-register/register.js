@@ -22,6 +22,8 @@ app.post("/register", async (req, res) => {
       username,
       email,
       password,
+      role,
+      adminCode,
       phoneNumber,
       phone_number,
       shippingAddress,
@@ -42,6 +44,14 @@ app.post("/register", async (req, res) => {
 
     if (!name || !normalizedEmail || typeof password !== "string" || !password) {
       return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    const requestedRole = typeof role === "string" ? role.trim() : "Customer";
+    if (requestedRole !== "Customer" && requestedRole !== "Admin") {
+      return res.status(400).json({ error: "Choose Customer or Admin as the account role" });
+    }
+    if (requestedRole === "Admin" && adminCode !== "admin") {
+      return res.status(403).json({ error: "The Admin access code is incorrect" });
     }
 
     if (password.length < 8) {
@@ -100,10 +110,11 @@ app.post("/register", async (req, res) => {
           email,
           phone_number,
           password_hash,
+          role,
           shipping_address
         )
-        VALUES (?, ?, ?, ?, ?, ?)
-        RETURNING user_id, email, role
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        RETURNING user_id, email, full_name, role
       `,
       args: [
         normalizedUsername,
@@ -111,6 +122,7 @@ app.post("/register", async (req, res) => {
         normalizedEmail,
         typeof phone === "string" && phone ? phone : null,
         passwordHash,
+        requestedRole,
         typeof address === "string" && address ? address : null,
       ],
     });
@@ -125,7 +137,7 @@ app.post("/register", async (req, res) => {
       {
         userId: user.user_id,
         email: user.email,
-        role: "user",
+        role: String(user.role).toLowerCase() === "admin" ? "admin" : "user",
       },
       JWT_SECRET,
       {
@@ -142,6 +154,12 @@ app.post("/register", async (req, res) => {
 
     return res.json({
       login: "success",
+      user: {
+        userId: user.user_id,
+        fullName: user.full_name,
+        email: user.email,
+        role: user.role,
+      },
     });
   } catch (err) {
     console.error("Registration error:", err);
