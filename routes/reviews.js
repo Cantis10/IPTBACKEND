@@ -163,4 +163,5 @@ app.post("/reviews", authenticated, async (req, res) => {
   }
 });
 
+app.ensureSchema = ensureSchema;
 module.exports = app;

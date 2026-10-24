@@ -5,9 +5,16 @@ const productImageUrl = require("../imports/productImageUrl");
 const app = express.Router();
 app.customPath = "/api";
 const adminOnly = checkAuth("admin");
+const orderRoutes = require("./orders");
+const reviewRoutes = require("./reviews");
+const ensureAdminSchemas = async (withReviews = true) => {
+  await orderRoutes.ensureSchema();
+  if (withReviews) await reviewRoutes.ensureSchema();
+};
 
 app.get("/admin/overview", adminOnly, async (_req, res) => {
   try {
+    await ensureAdminSchemas();
     const [orders, products, customers, reviews, complaints] = await Promise.all([
       db.execute("SELECT COUNT(*) AS order_count, COALESCE(SUM(CASE WHEN order_status != 'Cancelled' THEN total_amount ELSE 0 END), 0) AS sales_total, SUM(CASE WHEN order_status IN ('Pending', 'Confirmed') THEN 1 ELSE 0 END) AS pending_orders, SUM(CASE WHEN order_status IN ('Packed', 'Out for Delivery', 'Processing') THEN 1 ELSE 0 END) AS processing_orders, SUM(CASE WHEN order_status IN ('Delivered', 'Completed') THEN 1 ELSE 0 END) AS completed_orders, SUM(CASE WHEN order_status = 'Cancelled' THEN 1 ELSE 0 END) AS cancelled_orders FROM orders"),
       db.execute("SELECT COUNT(*) AS product_count, SUM(CASE WHEN is_active = 1 AND stock_quantity <= 5 THEN 1 ELSE 0 END) AS low_stock_count FROM products"),
@@ -36,6 +43,7 @@ app.get("/admin/overview", adminOnly, async (_req, res) => {
 
 app.get("/admin/dashboard", adminOnly, async (_req, res) => {
   try {
+    await ensureAdminSchemas();
     const [stats, orders, lowStock] = await Promise.all([
       db.execute("SELECT (SELECT COUNT(*) FROM orders) AS order_count, (SELECT COALESCE(SUM(CASE WHEN order_status != 'Cancelled' THEN total_amount ELSE 0 END), 0) FROM orders) AS sales_total, (SELECT SUM(CASE WHEN order_status IN ('Pending', 'Confirmed') THEN 1 ELSE 0 END) FROM orders) AS pending_orders, (SELECT SUM(CASE WHEN order_status IN ('Packed', 'Out for Delivery', 'Processing') THEN 1 ELSE 0 END) FROM orders) AS processing_orders, (SELECT SUM(CASE WHEN order_status IN ('Delivered', 'Completed') THEN 1 ELSE 0 END) FROM orders) AS completed_orders, (SELECT SUM(CASE WHEN order_status = 'Cancelled' THEN 1 ELSE 0 END) FROM orders) AS cancelled_orders, (SELECT COUNT(*) FROM products) AS product_count, (SELECT SUM(CASE WHEN is_active = 1 AND stock_quantity <= 5 THEN 1 ELSE 0 END) FROM products) AS low_stock_count, (SELECT COUNT(*) FROM users WHERE LOWER(role) != 'admin') AS customer_count, (SELECT COUNT(*) FROM reviews) AS review_count, (SELECT COUNT(*) FROM complaints) AS complaint_count"),
       db.execute("SELECT order_id, customer_name, order_status, total_amount, payment_method, placed_at, shipping_address FROM orders ORDER BY placed_at DESC, order_id DESC LIMIT 5"),
@@ -60,6 +68,15 @@ app.get("/admin/dashboard", adminOnly, async (_req, res) => {
   }
 });
 
+app.get("/admin/complaints", adminOnly, async (_req, res) => {
+  try {
+    const result = await db.execute("SELECT complaint_id, user_id, name, email, subject, message, status FROM complaints ORDER BY complaint_id DESC");
+    return res.json(result.rows);
+  } catch (error) {
+    console.error("Admin complaints error:", error);
+    return res.status(500).json({ error: "Unable to load customer complaints" });
+  }
+});
 app.get("/admin/products", adminOnly, async (_req, res) => {
   try {
     const result = await db.execute("SELECT p.product_id, p.product_name, p.description, p.price, p.stock_quantity, p.unit, p.image_url, p.is_active, p.category_id, c.category_name FROM products p LEFT JOIN categories c ON c.category_id = p.category_id ORDER BY p.product_name");
@@ -178,6 +195,7 @@ app.get("/admin/reports", adminOnly, async (req, res) => {
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const orderWhere = conditions.length ? `WHERE ${conditions.map((condition) => condition.replaceAll("placed_at", "o.placed_at")).join(" AND ")} AND o.order_status != 'Cancelled'` : "WHERE o.order_status != 'Cancelled'";
   try {
+    await ensureAdminSchemas();
     const [summary, daily, bestSellers, lowStock, reviews] = await Promise.all([
       db.execute({ sql: `SELECT COUNT(*) AS order_count, COALESCE(SUM(CASE WHEN order_status != 'Cancelled' THEN total_amount ELSE 0 END), 0) AS sales_total FROM orders ${where}`, args }),
       db.execute({ sql: `SELECT date(placed_at) AS sale_date, COUNT(*) AS order_count, COALESCE(SUM(CASE WHEN order_status != 'Cancelled' THEN total_amount ELSE 0 END), 0) AS sales_total FROM orders ${where} GROUP BY date(placed_at) ORDER BY sale_date DESC LIMIT 31`, args }),
@@ -217,6 +235,7 @@ app.patch("/admin/products/:id", adminOnly, async (req, res) => {
 
 app.get("/admin/orders", adminOnly, async (_req, res) => {
   try {
+    await ensureAdminSchemas(false);
     const result = await db.execute("SELECT order_id, customer_name, order_status, total_amount, payment_method, placed_at, shipping_address FROM orders ORDER BY placed_at DESC, order_id DESC LIMIT 200");
     return res.json(result.rows);
   } catch (error) {
@@ -229,6 +248,7 @@ app.get("/admin/orders/:id", adminOnly, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: "Invalid order" });
   try {
+    await ensureAdminSchemas(false);
     const order = await db.execute({ sql: "SELECT o.*, u.full_name, u.email, u.phone_number FROM orders o LEFT JOIN users u ON u.user_id = o.user_id WHERE o.order_id = ?", args: [id] });
     if (!order.rows.length) return res.status(404).json({ error: "Order not found" });
     const items = await db.execute({ sql: "SELECT product_id, product_name, quantity, unit_price, unit, image_url FROM order_items WHERE order_id = ? ORDER BY rowid", args: [id] });
@@ -245,6 +265,7 @@ app.patch("/admin/orders/:id", adminOnly, async (req, res) => {
   const allowed = ["Pending", "Packed", "Out for Delivery", "Delivered", "Cancelled", "Processing", "Completed"];
   if (!Number.isSafeInteger(id) || id < 1 || !allowed.includes(status)) return res.status(400).json({ error: "Choose a valid order status" });
   try {
+    await ensureAdminSchemas(false);
     const result = await db.execute({ sql: "UPDATE orders SET order_status = ? WHERE order_id = ?", args: [status, id] });
     if (!Number(result.rowsAffected)) return res.status(404).json({ error: "Order not found" });
     return res.json({ saved: true });
@@ -268,6 +289,7 @@ app.get("/admin/customers/:id/orders", adminOnly, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: "Invalid customer" });
   try {
+    await ensureAdminSchemas(false);
     const result = await db.execute({ sql: "SELECT order_id, order_status, total_amount, placed_at FROM orders WHERE user_id = ? ORDER BY placed_at DESC", args: [id] });
     return res.json(result.rows);
   } catch (error) {

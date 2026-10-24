@@ -187,6 +187,7 @@ app.post("/orders/:orderId/refund", authenticated, async (req, res) => {
     return res.status(500).json({ error: "Failed to request refund" });
   }
 });
+app.ensureSchema = ensureSchema;
 module.exports = app;
 
 
