@@ -8,10 +8,12 @@ const adminOnly = checkAuth("admin");
 
 app.get("/admin/overview", adminOnly, async (_req, res) => {
   try {
-    const [orders, products, customers] = await Promise.all([
+    const [orders, products, customers, reviews, complaints] = await Promise.all([
       db.execute("SELECT COUNT(*) AS order_count, COALESCE(SUM(CASE WHEN order_status != 'Cancelled' THEN total_amount ELSE 0 END), 0) AS sales_total, SUM(CASE WHEN order_status IN ('Pending', 'Confirmed') THEN 1 ELSE 0 END) AS pending_orders, SUM(CASE WHEN order_status IN ('Packed', 'Out for Delivery', 'Processing') THEN 1 ELSE 0 END) AS processing_orders, SUM(CASE WHEN order_status IN ('Delivered', 'Completed') THEN 1 ELSE 0 END) AS completed_orders, SUM(CASE WHEN order_status = 'Cancelled' THEN 1 ELSE 0 END) AS cancelled_orders FROM orders"),
       db.execute("SELECT COUNT(*) AS product_count, SUM(CASE WHEN is_active = 1 AND stock_quantity <= 5 THEN 1 ELSE 0 END) AS low_stock_count FROM products"),
       db.execute("SELECT COUNT(*) AS customer_count FROM users WHERE LOWER(role) != 'admin'"),
+      db.execute("SELECT COUNT(*) AS review_count FROM reviews"),
+      db.execute("SELECT COUNT(*) AS complaint_count FROM complaints"),
     ]);
     return res.json({
       orderCount: Number(orders.rows[0]?.order_count || 0),
@@ -23,10 +25,38 @@ app.get("/admin/overview", adminOnly, async (_req, res) => {
       productCount: Number(products.rows[0]?.product_count || 0),
       lowStockCount: Number(products.rows[0]?.low_stock_count || 0),
       customerCount: Number(customers.rows[0]?.customer_count || 0),
+      reviewCount: Number(reviews.rows[0]?.review_count || 0),
+      complaintCount: Number(complaints.rows[0]?.complaint_count || 0),
     });
   } catch (error) {
     console.error("Admin overview error:", error);
     return res.status(500).json({ error: "Unable to load admin overview" });
+  }
+});
+
+app.get("/admin/dashboard", adminOnly, async (_req, res) => {
+  try {
+    const [stats, orders, lowStock] = await Promise.all([
+      db.execute("SELECT (SELECT COUNT(*) FROM orders) AS order_count, (SELECT COALESCE(SUM(CASE WHEN order_status != 'Cancelled' THEN total_amount ELSE 0 END), 0) FROM orders) AS sales_total, (SELECT SUM(CASE WHEN order_status IN ('Pending', 'Confirmed') THEN 1 ELSE 0 END) FROM orders) AS pending_orders, (SELECT SUM(CASE WHEN order_status IN ('Packed', 'Out for Delivery', 'Processing') THEN 1 ELSE 0 END) FROM orders) AS processing_orders, (SELECT SUM(CASE WHEN order_status IN ('Delivered', 'Completed') THEN 1 ELSE 0 END) FROM orders) AS completed_orders, (SELECT SUM(CASE WHEN order_status = 'Cancelled' THEN 1 ELSE 0 END) FROM orders) AS cancelled_orders, (SELECT COUNT(*) FROM products) AS product_count, (SELECT SUM(CASE WHEN is_active = 1 AND stock_quantity <= 5 THEN 1 ELSE 0 END) FROM products) AS low_stock_count, (SELECT COUNT(*) FROM users WHERE LOWER(role) != 'admin') AS customer_count, (SELECT COUNT(*) FROM reviews) AS review_count, (SELECT COUNT(*) FROM complaints) AS complaint_count"),
+      db.execute("SELECT order_id, customer_name, order_status, total_amount, payment_method, placed_at, shipping_address FROM orders ORDER BY placed_at DESC, order_id DESC LIMIT 5"),
+      db.execute("SELECT product_id, product_name, stock_quantity, unit FROM products WHERE is_active = 1 AND stock_quantity <= 5 ORDER BY stock_quantity, product_name LIMIT 10"),
+    ]);
+    const row = stats.rows[0] || {};
+    return res.json({
+      overview: {
+        orderCount: Number(row.order_count || 0), salesTotal: Number(row.sales_total || 0),
+        pendingOrders: Number(row.pending_orders || 0), processingOrders: Number(row.processing_orders || 0),
+        completedOrders: Number(row.completed_orders || 0), cancelledOrders: Number(row.cancelled_orders || 0),
+        productCount: Number(row.product_count || 0), lowStockCount: Number(row.low_stock_count || 0),
+        customerCount: Number(row.customer_count || 0), reviewCount: Number(row.review_count || 0),
+        complaintCount: Number(row.complaint_count || 0),
+      },
+      orders: orders.rows,
+      lowStock: lowStock.rows,
+    });
+  } catch (error) {
+    console.error("Admin dashboard error:", error);
+    return res.status(500).json({ error: "Unable to load the admin dashboard" });
   }
 });
 
@@ -68,6 +98,28 @@ app.get("/admin/categories", adminOnly, async (_req, res) => {
   } catch (error) {
     console.error("Admin categories error:", error);
     return res.status(500).json({ error: "Unable to load categories" });
+  }
+});
+
+app.get("/admin/category-counts", adminOnly, async (_req, res) => {
+  try {
+    const result = await db.execute("SELECT p.category_id, c.category_name, COUNT(*) AS product_count FROM products p LEFT JOIN categories c ON c.category_id = p.category_id GROUP BY p.category_id, c.category_name");
+    const names = ["Fruits", "Vegetables", "Grains", "Others"];
+    const counts = new Map(names.map((name) => [name, 0]));
+    const fallbackById = new Map([[1, "Fruits"], [2, "Vegetables"], [3, "Grains"], [4, "Others"]]);
+    for (const row of result.rows) {
+      const label = String(row.category_name || "").toLowerCase();
+      let bucket = label.includes("fruit") ? "Fruits"
+        : label.includes("vegetable") ? "Vegetables"
+          : label.includes("grain") ? "Grains"
+            : label.includes("other") ? "Others"
+              : fallbackById.get(Number(row.category_id)) || "Others";
+      counts.set(bucket, counts.get(bucket) + Number(row.product_count || 0));
+    }
+    return res.json(names.map((category_name) => ({ category_name, product_count: counts.get(category_name) })));
+  } catch (error) {
+    console.error("Admin category counts error:", error);
+    return res.status(500).json({ error: "Unable to load category product counts" });
   }
 });
 
@@ -126,13 +178,14 @@ app.get("/admin/reports", adminOnly, async (req, res) => {
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const orderWhere = conditions.length ? `WHERE ${conditions.map((condition) => condition.replaceAll("placed_at", "o.placed_at")).join(" AND ")} AND o.order_status != 'Cancelled'` : "WHERE o.order_status != 'Cancelled'";
   try {
-    const [summary, daily, bestSellers, lowStock] = await Promise.all([
+    const [summary, daily, bestSellers, lowStock, reviews] = await Promise.all([
       db.execute({ sql: `SELECT COUNT(*) AS order_count, COALESCE(SUM(CASE WHEN order_status != 'Cancelled' THEN total_amount ELSE 0 END), 0) AS sales_total FROM orders ${where}`, args }),
       db.execute({ sql: `SELECT date(placed_at) AS sale_date, COUNT(*) AS order_count, COALESCE(SUM(CASE WHEN order_status != 'Cancelled' THEN total_amount ELSE 0 END), 0) AS sales_total FROM orders ${where} GROUP BY date(placed_at) ORDER BY sale_date DESC LIMIT 31`, args }),
       db.execute({ sql: `SELECT i.product_id, i.product_name, SUM(i.quantity) AS units_sold, SUM(i.quantity * i.unit_price) AS sales_total FROM order_items i INNER JOIN orders o ON o.order_id = i.order_id ${orderWhere} GROUP BY i.product_id, i.product_name ORDER BY units_sold DESC LIMIT 10`, args }),
       db.execute("SELECT product_id, product_name, stock_quantity, unit FROM products WHERE is_active = 1 AND stock_quantity <= 5 ORDER BY stock_quantity, product_name"),
+      db.execute("SELECT r.review_id, r.rating_stars, r.comment_text, r.created_at, COALESCE(NULLIF(r.author_name, ''), u.full_name, 'Customer') AS author, p.product_name FROM reviews r LEFT JOIN users u ON u.user_id = r.user_id LEFT JOIN products p ON p.product_id = r.product_id ORDER BY r.created_at DESC, r.review_id DESC LIMIT 50"),
     ]);
-    return res.json({ summary: summary.rows[0], daily: daily.rows, bestSellers: bestSellers.rows, lowStock: lowStock.rows });
+    return res.json({ summary: summary.rows[0], daily: daily.rows, bestSellers: bestSellers.rows, lowStock: lowStock.rows, reviews: reviews.rows });
   } catch (error) {
     console.error("Admin report error:", error);
     return res.status(500).json({ error: "Unable to load sales reports" });
