@@ -1,4 +1,4 @@
-﻿const express = require("express");
+const express = require("express");
 const { checkAuth } = require("../imports/token");
 const db = require("../imports/database");
 
@@ -7,6 +7,39 @@ const authenticated = checkAuth("user");
 
 app.customPath = "/api";
 
+let resolutionSchemaReady;
+async function ensureComplaintResolutionSchema() {
+  if (!resolutionSchemaReady) {
+    resolutionSchemaReady = (async () => {
+      const columns = await db.execute("PRAGMA table_info(complaints)");
+      if (!columns.rows.some((column) => column.name === "resolution")) {
+        await db.execute("ALTER TABLE complaints ADD COLUMN resolution TEXT NOT NULL DEFAULT ''");
+      }
+    })().catch((error) => {
+      resolutionSchemaReady = null;
+      throw error;
+    });
+  }
+  return resolutionSchemaReady;
+}
+
+app.get("/complaint", authenticated, async (req, res) => {
+  const userId = Number(req.user.userId);
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    return res.status(401).json({ error: "Invalid customer account" });
+  }
+  try {
+    await ensureComplaintResolutionSchema();
+    const result = await db.execute({
+      sql: "SELECT complaint_id, user_id, name, email, subject, message, status, resolution FROM complaints WHERE user_id = ? ORDER BY complaint_id DESC",
+      args: [userId],
+    });
+    return res.json(result.rows);
+  } catch (error) {
+    console.error("Customer inbox load failed:", error);
+    return res.status(500).json({ error: "Unable to load inbox" });
+  }
+});
 app.post("/complaint", authenticated, async (req, res) => {
   const userId = Number(req.user.userId);
   const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
