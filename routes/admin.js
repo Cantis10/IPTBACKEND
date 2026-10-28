@@ -7,6 +7,28 @@ app.customPath = "/api";
 const adminOnly = checkAuth("admin");
 const orderRoutes = require("./orders");
 const reviewRoutes = require("./reviews");
+async function ensureDefaultCategories() {
+  const existing = await db.execute("SELECT COUNT(*) AS category_count FROM categories");
+  if (Number(existing.rows[0]?.category_count || 0) !== 0) return;
+  await db.batch([
+    { sql: "INSERT OR IGNORE INTO categories (category_id, category_name, description) VALUES (?, ?, ?)", args: [1, "Fruits", "Fresh fruits"] },
+    { sql: "INSERT OR IGNORE INTO categories (category_id, category_name, description) VALUES (?, ?, ?)", args: [2, "Vegetables", "Fresh vegetables"] },
+    { sql: "INSERT OR IGNORE INTO categories (category_id, category_name, description) VALUES (?, ?, ?)", args: [3, "Grains", "Grains and pantry staples"] },
+    { sql: "INSERT OR IGNORE INTO categories (category_id, category_name, description) VALUES (?, ?, ?)", args: [4, "Others", "Other market products"] },
+  ], "write");
+}
+let complaintResolutionSchemaReady;
+async function ensureComplaintResolutionSchema() {
+  if (!complaintResolutionSchemaReady) {
+    complaintResolutionSchemaReady = (async () => {
+      const columns = await db.execute("PRAGMA table_info(complaints)");
+      if (!columns.rows.some((column) => column.name === "resolution")) {
+        await db.execute("ALTER TABLE complaints ADD COLUMN resolution TEXT NOT NULL DEFAULT ''");
+      }
+    })().catch((error) => { complaintResolutionSchemaReady = null; throw error; });
+  }
+  return complaintResolutionSchemaReady;
+}
 const ensureAdminSchemas = async (withReviews = true) => {
   await orderRoutes.ensureSchema();
   if (withReviews) await reviewRoutes.ensureSchema();
@@ -70,11 +92,67 @@ app.get("/admin/dashboard", adminOnly, async (_req, res) => {
 
 app.get("/admin/complaints", adminOnly, async (_req, res) => {
   try {
-    const result = await db.execute("SELECT complaint_id, user_id, name, email, subject, message, status FROM complaints ORDER BY complaint_id DESC");
+    await ensureComplaintResolutionSchema();
+    const result = await db.execute("SELECT complaint_id, user_id, name, email, subject, message, status, resolution FROM complaints ORDER BY complaint_id DESC");
     return res.json(result.rows);
   } catch (error) {
     console.error("Admin complaints error:", error);
     return res.status(500).json({ error: "Unable to load customer complaints" });
+  }
+});
+app.post("/admin/complaints", adminOnly, async (req, res) => {
+  const body = req.body || {};
+  const userId = Number(req.user?.userId);
+  const name = String(body.name || "").trim();
+  const email = String(body.email || "").trim().toLowerCase();
+  const subject = String(body.subject || "").trim();
+  const message = String(body.message || "").trim();
+  if (!Number.isSafeInteger(userId) || userId < 1 || name.length < 2 || name.length > 200 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || !subject || subject.length > 200 || !message || message.length > 5000) {
+    return res.status(400).json({ error: "Enter valid complaint details" });
+  }
+  try {
+    await ensureComplaintResolutionSchema();
+    const result = await db.execute({ sql: "INSERT INTO complaints (user_id, name, email, subject, message, status) VALUES (?, ?, ?, ?, ?, 'Pending')", args: [userId, name, email, subject, message] });
+    return res.status(201).json({ complaintId: Number(result.lastInsertRowid) });
+  } catch (error) {
+    console.error("Admin complaint create error:", error);
+    return res.status(500).json({ error: "Unable to create complaint" });
+  }
+});
+
+app.patch("/admin/complaints/:id", adminOnly, async (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body || {};
+  const name = String(body.name || "").trim();
+  const email = String(body.email || "").trim().toLowerCase();
+  const subject = String(body.subject || "").trim();
+  const message = String(body.message || "").trim();
+  const status = String(body.status || "").trim();
+  const resolution = typeof body.resolution === "string" ? body.resolution.trim() : "";
+  if (!Number.isSafeInteger(id) || id < 1 || name.length < 2 || name.length > 200 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || !subject || subject.length > 200 || !message || message.length > 5000 || !["Pending", "In Progress", "Resolved", "Closed"].includes(status) || resolution.length > 2000 || (status === "Resolved" && !resolution)) {
+    return res.status(400).json({ error: "Enter valid complaint details and status" });
+  }
+  try {
+    await ensureComplaintResolutionSchema();
+    const result = await db.execute({ sql: "UPDATE complaints SET name = ?, email = ?, subject = ?, message = ?, status = ?, resolution = ? WHERE complaint_id = ?", args: [name, email, subject, message, status, resolution, id] });
+    if (!Number(result.rowsAffected)) return res.status(404).json({ error: "Complaint not found" });
+    return res.json({ saved: true });
+  } catch (error) {
+    console.error("Admin complaint update error:", error);
+    return res.status(500).json({ error: "Unable to update complaint" });
+  }
+});
+
+app.delete("/admin/complaints/:id", adminOnly, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: "Invalid complaint" });
+  try {
+    const result = await db.execute({ sql: "DELETE FROM complaints WHERE complaint_id = ?", args: [id] });
+    if (!Number(result.rowsAffected)) return res.status(404).json({ error: "Complaint not found" });
+    return res.json({ deleted: true });
+  } catch (error) {
+    console.error("Admin complaint delete error:", error);
+    return res.status(500).json({ error: "Unable to delete complaint" });
   }
 });
 app.get("/admin/products", adminOnly, async (_req, res) => {
@@ -100,6 +178,9 @@ app.post("/admin/products", adminOnly, async (req, res) => {
     return res.status(400).json({ error: "Enter valid product details, price, stock, category, and image" });
   }
   try {
+    await ensureDefaultCategories();
+    const category = await db.execute({ sql: "SELECT category_id FROM categories WHERE category_id = ?", args: [categoryId] });
+    if (!category.rows[0]) return res.status(400).json({ error: "Selected category does not exist. Refresh categories and try again." });
     const result = await db.execute({ sql: "INSERT INTO products (product_name, description, price, stock_quantity, unit, image_url, category_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)", args: [name, description, price, stock, unit, imageUrl, categoryId] });
     return res.status(201).json({ productId: Number(result.lastInsertRowid) });
   } catch (error) {
@@ -110,6 +191,7 @@ app.post("/admin/products", adminOnly, async (req, res) => {
 
 app.get("/admin/categories", adminOnly, async (_req, res) => {
   try {
+    await ensureDefaultCategories();
     const result = await db.execute("SELECT category_id, category_name, description FROM categories ORDER BY category_name");
     return res.json(result.rows);
   } catch (error) {
@@ -210,6 +292,36 @@ app.get("/admin/reports", adminOnly, async (req, res) => {
   }
 });
 
+app.patch("/admin/reviews/:id", adminOnly, async (req, res) => {
+  const id = Number(req.params.id);
+  const rating = Number(req.body?.rating);
+  const comment = typeof req.body?.comment === "string" ? req.body.comment.trim() : "";
+  if (!Number.isSafeInteger(id) || id < 1 || !Number.isInteger(rating) || rating < 1 || rating > 5 || comment.length > 2000) {
+    return res.status(400).json({ error: "Enter a rating from 1 to 5 and a review under 2,000 characters" });
+  }
+  try {
+    await reviewRoutes.ensureSchema();
+    const result = await db.execute({ sql: "UPDATE reviews SET rating_stars = ?, comment_text = ? WHERE review_id = ?", args: [rating, comment || null, id] });
+    if (!Number(result.rowsAffected)) return res.status(404).json({ error: "Review not found" });
+    return res.json({ saved: true });
+  } catch (error) {
+    console.error("Admin review update error:", error);
+    return res.status(500).json({ error: "Unable to update review" });
+  }
+});
+app.delete("/admin/reviews/:id", adminOnly, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: "Invalid review" });
+  try {
+    await reviewRoutes.ensureSchema();
+    const result = await db.execute({ sql: "DELETE FROM reviews WHERE review_id = ?", args: [id] });
+    if (!Number(result.rowsAffected)) return res.status(404).json({ error: "Review not found" });
+    return res.json({ deleted: true });
+  } catch (error) {
+    console.error("Admin review delete error:", error);
+    return res.status(500).json({ error: "Unable to delete review" });
+  }
+});
 app.patch("/admin/products/:id", adminOnly, async (req, res) => {
   const id = Number(req.params.id);
   const name = String(req.body?.name || "").trim();
@@ -224,6 +336,9 @@ app.patch("/admin/products/:id", adminOnly, async (req, res) => {
     return res.status(400).json({ error: "Enter valid product details, price, stock, category, and image" });
   }
   try {
+    await ensureDefaultCategories();
+    const category = await db.execute({ sql: "SELECT category_id FROM categories WHERE category_id = ?", args: [categoryId] });
+    if (!category.rows[0]) return res.status(400).json({ error: "Selected category does not exist. Refresh categories and try again." });
     const result = await db.execute({ sql: "UPDATE products SET product_name = ?, description = ?, price = ?, stock_quantity = ?, unit = ?, category_id = ?, image_url = ?, is_active = ? WHERE product_id = ?", args: [name, description, price, stock, unit, categoryId, imageUrl, active ? 1 : 0, id] });
     if (!Number(result.rowsAffected)) return res.status(404).json({ error: "Product not found" });
     return res.json({ saved: true });

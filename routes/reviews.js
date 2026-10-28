@@ -1,4 +1,4 @@
-const express = require("express");
+﻿const express = require("express");
 const { checkAuth } = require("../imports/token");
 const db = require("../imports/database");
 const app = express.Router();
@@ -91,6 +91,21 @@ app.get("/reviews", async (_req, res) => {
   }
 });
 
+app.get("/reviews/mine/count", authenticated, async (req, res) => {
+  const userId = customerId(req);
+  if (!userId) return res.status(401).json({ error: "Sign in to view your review count" });
+  try {
+    await ensureSchema();
+    const result = await db.execute({
+      sql: "SELECT COUNT(*) AS review_count FROM reviews WHERE user_id = ?",
+      args: [userId],
+    });
+    return res.json({ count: Number(result.rows[0]?.review_count || 0) });
+  } catch (error) {
+    console.error("Error loading account review count:", error);
+    return res.status(500).json({ error: "Failed to load your review count" });
+  }
+});
 app.get("/reviews/avatar", authenticated, async (req, res) => {
   try {
     await ensureSchema();

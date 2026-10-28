@@ -1,4 +1,4 @@
-const express = require("express");
+﻿const express = require("express");
 const app = express.Router();
 
 const db = require("../../imports/database");
@@ -25,7 +25,17 @@ async function verifyPassword(password, storedHash) {
 
   const expected = Buffer.from(digest, "hex");
   const actual = await scrypt(password, salt, expected.length);
-  return crypto.timingSafeEqual(actual, expected);
+  if (crypto.timingSafeEqual(actual, expected)) {
+    return { valid: true, needsRehash: false };
+  }
+
+  // Older account imports may have used the decoded salt bytes instead of
+  // the stored hex text. Accept that legacy encoding, then upgrade it below.
+  const legacyActual = await scrypt(password, Buffer.from(salt, "hex"), expected.length);
+  return {
+    valid: crypto.timingSafeEqual(legacyActual, expected),
+    needsRehash: crypto.timingSafeEqual(legacyActual, expected),
+  };
 }
 
 app.post("/login", async (req, res) => {
@@ -57,8 +67,18 @@ app.post("/login", async (req, res) => {
     });
 
     const user = result.rows[0];
-    if (!user || !(await verifyPassword(password, user.password_hash))) {
+    const verification = user ? await verifyPassword(password, user.password_hash) : { valid: false, needsRehash: false };
+    if (!verification.valid) {
       return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+    if (verification.needsRehash) {
+      const salt = crypto.randomBytes(16).toString("hex");
+      const passwordHash = `scrypt:${salt}:${(await scrypt(password, salt, 64)).toString("hex")}`;
+      await db.execute({
+        sql: "UPDATE users SET password_hash = ? WHERE user_id = ?",
+        args: [passwordHash, user.user_id],
+      });
     }
 
     const role = String(user.role).toLowerCase() === "admin" ? "admin" : "user";
