@@ -77,6 +77,7 @@ function loadRoutes(directory) {
 }
 
 loadRoutes(routersPath);
+const orderRoutes = require("./routes/orders");
 
 const filesPath = path.join(__dirname, "files");
 app.use("/assets", express.static(path.join(__dirname, "assets")));
@@ -87,6 +88,13 @@ app.use((req, res) => {
 });
 
 if (require.main === module) {
+  const orderClaimTimer = setInterval(() => {
+    orderRoutes.processDueClaims().catch((error) => {
+      console.error("Automatic order claim check failed:", error);
+    });
+  }, 30_000);
+  orderClaimTimer.unref();
+
   app.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
   });
